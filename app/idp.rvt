@@ -1,0 +1,23 @@
+<?
+	set ourdir [file dirname [info nameofexecutable]]
+	set confdir [file join $ourdir etc]
+	if {![file exists $confdir]} {
+		set confdir [file join $ourdir .. etc]
+	}
+	set conffile [file join $confdir conf]
+	set crtfile [file join $confdir crt]
+
+	source $conffile
+
+	package require saml 0.1
+
+	set fd [open $crtfile]
+	set cert [read $fd]
+	close $fd
+
+	set metadata [saml::idp_metadata $cert $id $location]
+
+	headers type application/xml
+
+	puts $metadata
+?>

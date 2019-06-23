@@ -1,0 +1,141 @@
+<?
+	if {[info exists ::env(REQUEST_URI)]} {
+		if {[lindex [split $::env(REQUEST_URI) "/"] end] in {"idp" "metadata.xml"}} {
+			parse idp.rvt
+			rivet_flush -final
+			exit
+		}
+	}
+
+	proc htmlquote {text} {
+		set output ""
+		foreach letter [split $text ""] {
+			if {[regexp {[A-Za-z0-9 =-]} $letter]} {
+				append output $letter
+
+				continue
+			}
+
+			if {![scan $letter %c value]} {
+				return -code error "Unable to convert to value."
+			}
+
+			append output "&#$value;"
+		}
+
+		return $output
+	}
+
+	set ourdir [file dirname [info nameofexecutable]]
+	set confdir [file join $ourdir etc]
+	if {![file exists $confdir]} {
+		set confdir [file join $ourdir .. etc]
+	}
+	set conffile [file join $confdir conf]
+	set keyfile [file join $confdir key]
+	set crtfile [file join $confdir crt]
+
+	proc ::debugLog {message} {
+	}
+
+
+	source $conffile
+
+	package require pki 0.6
+	package require saml 0.1
+	package require sha1
+
+	load_response args
+
+	if {[info exists args(username)]} {
+		set username $args(username)
+	}
+
+	if {[info exists username]} {
+		set fd [open $keyfile]
+		set key [read $fd]
+		close $fd
+
+		set fd [open $crtfile]
+		set cert [read $fd]
+		close $fd
+
+		if {[info exists args(SAMLRequest)]} {
+			set request $args(SAMLRequest)
+			set request [binary decode base64 $request]
+			set request [zlib inflate $request]
+
+			array set responseinfo [saml::request $key $cert $id $request $username]
+		} else {
+			if {[info exists ::env(REQUEST_URI)]} {
+				set siteword [string tolower [lindex [split $::env(REQUEST_URI) /] end-1]]
+				if {$siteword == "sites"} {
+					set site [string tolower [lindex [split $::env(REQUEST_URI) /] end]]
+
+					if {[info exists sites($site)]} {
+						set spurl $sites($site)
+
+						array set responseinfo [saml::request $key $cert $id "" $username $spurl]
+					} else {
+						lappend reason "Unable to determine where to redirect you to"
+
+						::debugLog "reason=$reason"
+					}
+				}
+			}
+		}
+	} else {
+		lappend reason "Unable to determine username."
+
+		::debugLog "reason=$reason"
+	}
+
+	if {[info exists responseinfo]} {
+		set response $responseinfo(response)
+		set spurl $responseinfo(spurl)
+
+		set response [binary encode base64 $response]
+
+		::debugLog "Success. Redirecting user to $spurl with response: $response"
+	} else {
+		lappend reason "Unable to gather enough information to generate a response."
+
+		::debugLog "reason=$reason"
+	}
+?><html>
+	<head>
+		<title>SAML Authentication</title>
+	</head>
+	<body onLoad="document.SAMLResponseForm.submit();"><?
+	if {[info exists response]} {
+?>
+		<p>Please wait while you are redirected...</p>
+		<form name="SAMLResponseForm" method="POST" action="<? puts -nonewline $spurl ?>">
+			<input type="hidden" name="SAMLResponse" value="<? puts -nonewline $response ?>">
+			<? if {[info exists args(RelayState)]} { ?><input type="hidden" name="RelayState" value="<? puts -nonewline [htmlquote $args(RelayState)] ?>"><? } ?>
+			<input type="submit" name="Login" value="Login" style="display: none;">
+			<noscript><input type="submit" name="LoginManual" value="LoginManual"></noscript>
+		</form><?
+	} elseif {![info exists args(username)]} {
+?>
+		<form name="SAMLAuthForm" method="POST">
+			<? if {[info exists args(RelayState)]} { ?><input type="hidden" name="RelayState" value="<? puts -nonewline [htmlquote $args(RelayState)] ?>"><? } ?>
+			<? if {[info exists args(SAMLRequest)]} { ?><input type="hidden" name="SAMLRequest" value="<? puts -nonewline [htmlquote $args(SAMLRequest)] ?>"><? } ?>
+			<input name="username">
+			<input type="submit" name="Login" value="Login">
+		</form>
+<?
+	} else {
+		if {[info exists reason]} {
+?>
+			<b>Invalid SAML Request or unable to identify user: <? puts -nonewline [lindex $reason 0] ?></b>
+<?
+		} else {
+?>
+			<b>Invalid SAML Request or unable to identify user.</b>
+<?
+		}
+	}
+?>
+	</body>
+</html>
